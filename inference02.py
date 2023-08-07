@@ -13,6 +13,7 @@ import cv2
 import numpy as np
 import time
 from pathlib import Path
+import copy
 
 import torch
 from utils.general import increment_path, set_logging, check_img_size, non_max_suppression, scale_coords, xyxy2xywh
@@ -108,6 +109,29 @@ def get_xyxy(xywh):
     y2 = xywh[1] + xywh[3] / 2
     return [x1, y1, x2, y2]
 
+
+def box_same_process(H, W, xyxy, alpha=1.1):
+    '''
+    1:1 和 440*852方法共同的处理部分
+    H, W：原始图像宽高
+    box：预测框的宽高
+    return:
+    box:扩大后的box的xyxy和hw
+    '''
+    box = []
+    for x in xyxy:
+        box.append(int(x))
+
+    w = box[2] - box[0]
+    h = box[3] - box[1]
+    # 太小了就扩大一点点比例
+    if int((w * 852) / 440) < h:
+        alpha = 1.05
+    box, w, h = box_expand_2(H, W, box, alpha=alpha) # 返回的元素都是int类型
+
+    return box, w, h,
+
+
 def box_expand(H, W, box, alpha=1.1):
     # 这个是按照比例扩大
     xywh = get_xywh(box)
@@ -139,48 +163,55 @@ def box_expand_2(H, W, box, alpha=1.1):
     box[2] = int(min(box[2], W))
     box[3] = int(min(box[3], H))
 
-
     return box, int(w1), int(h1)
+
 def box_process(H, W, box, alpha=1.1):
     '''
     H:原始图片的高
     W：原始图片的宽
-    box:[x,y,x,y]->Torch.tensor
+    box:[x,y,x,y]->int
     '''
-    print('\n---box process origin---------')
+    print('---\nbox expand---------')
     print(box)
-    # TODO 先统一处理成int类型， 这块代码需要做一下调整
-    w = int(box[2]-box[0])
-    h = int(box[3]-box[1])
-    if int((w * 852) / 440) < h:
-        # 先扩大一个比例
-        box, w, h = box_expand(H, W, box, alpha=alpha) # 返回的元素都是int类型
-    print('---box expand---------')
-    print(box)
+    pad = 0
+    w = box[2] - box[0]
+    # h = box[3] - box[1]
     # TODO 行人框肯定是W最短，有可能出现W>H的情况，这种后面考虑
     r_h = int((w * 852) / 440)
     # y + r_h < H，不超过边界框就直接裁剪，其他出现意外情况先不考虑
     # 判断是否是要裁剪，如果是false表示要增加东西，如果是True表示要crop
-    crop = True if (w / h) < (440/852) else False
-    if crop:
-        # 直接裁剪
+    # crop = True if (w / h) < (440/852) else False
+    if box[1] + r_h < H:
         box[3] = box[1] + r_h
     else:
-        # <H直接裁剪
-        if box[1] + r_h < H:
-            box[3] = box[1] + r_h
+        box[3] = H
+        res = (box[1] + r_h) - H
+        # 判断box[0]-res是否小于0
+        if box[1] - res > 0:
+            box[1] = box[1] - res
         else:
-            box[3] = H
-            res = (box[1] + r_h) - H
-            # 判断box[0]-res是否小于0
-            box[1] = box[1] - res if box[1] - res > 0 else 0
+            # 否则需要上下pad
+            print(int((res - box[1]) / 2))
+            pad = 0 if int((res - box[1]) / 2) < 60 else int((res - box[1]) / 2)
+            box[1] = 0
+    # if crop:
+    #     # 直接裁剪
+    #     box[3] = box[1] + r_h
+    # else:
+    #     # <H直接裁剪
+    #     if box[1] + r_h < H:
+    #         box[3] = box[1] + r_h
+    #     else:
+    #         box[3] = H
+    #         res = (box[1] + r_h) - H
+    #         # 判断box[0]-res是否小于0
+    #         box[1] = box[1] - res if box[1] - res > 0 else 0
     # TODO 有一个问题就是你裁剪之后他并不是有和原来比例是一样的
-    print(box)
-    return int(box[0]), int(box[1]), int(box[2]), int(box[3])
+    return [int(box[0]), int(box[1]), int(box[2]), int(box[3])], pad
 
 
 # 裁剪图片
-def crop_resize_imgs(path1, img, box, index, save_img=False):
+def crop_resize_imgs(path1, img, box, index, size=(440, 852), save_img=False, pad=0):
     '''
     box:[x,y,x,y]->Torch.tensor
     labeled_path: only for test
@@ -188,11 +219,115 @@ def crop_resize_imgs(path1, img, box, index, save_img=False):
 
     # img1 = img[int(box[1]): int(box[3]), int(box[0]): int(box[2]), :]
     img1 = img[box[1]: box[3], box[0]: box[2], :]
-    img1 = cv2.resize(img1, (440, 852))
+    if pad:
+        img1 = cv2.copyMakeBorder(img1, pad, pad, 0, 0, cv2.BORDER_REPLICATE)
+    img1 = cv2.resize(img1, size)
+
     if save_img:
-        cv2.imwrite(path1.split('.')[-2] + '_resize_' + str(index) + '.jpg', img1)
+        cv2.imwrite(f"{path1.split('.')[-2]}_resize{size}_{str(index)}.jpg", img1)
 
     return img1
+
+
+def right_crop(img, box, path1, index, save_img=False):
+    '''
+    裁剪成440*852
+    input
+    img: 原始图片->np
+    box：expand之后的预测框坐标->[int,int,...] xyxy格式
+    path：裁剪图片存储的路径
+    index：图片中第几个人
+    save：是否保存图片
+    return
+    result['imgb64'] = imgb64  # base64类型的数据
+    result['box'] = box  # 调整后的框
+    result['id'] = index # 第几个人
+    '''
+    result = {'size': '440*852'}
+    H, W, _ = img.shape
+    # # 先框做处理在裁剪
+    box, pad = box_process(H, W, box, alpha=configs['alpha'])  # 处理之后的裁剪框
+    # 裁剪
+    crop_img = crop_resize_imgs(path1, img, box, index, size=(440, 852), save_img=save_img, pad=pad)
+    # # TODO 2、设计一个返回的json类型（完成）
+    imgb64 = str(base64.b64encode(np.ascontiguousarray(crop_img)), 'utf-8')
+    result['imgb64'] = imgb64
+    result['box'] = box
+    result['id'] = index
+    return result
+
+
+def box_to_square(box, H, W):
+    '''
+    裁剪框处理
+    input
+    box：预测框坐标->[int,int,...] xyxy格式
+    # 1、predict的框肯定是在图像内部，没有超出图像的外的，所以这里不做预处理
+    # 2、这里只考虑预测框h>w的情况，其他情况先不考虑
+    '''
+    w1 = box[0]
+    w2 = W - box[2]
+    pad_w = w1 if w2 > w1 else w2
+    box[0] = box[0] - pad_w  # TODO 这个会不会超出边界，要不要+1
+    box[2] = box[2] + pad_w
+    w_e = box[2] - box[0]
+    h = box[3] - box[1]
+    if w_e < h:
+        # TODO 扩大多少比例取决于(H-box[1]) / w_e 的比例，或者直接扩大比例再做处理，
+        #  那就不用加像素，反正两个函数都是要expand，那只做一次就好了
+        # box[1] = max(box[1] - 20, 0) # 这边在之前已经处理了，所以就不用添加像素了
+        box[3] = box[1] + (box[2] - box[0])
+    else:
+        # TODO
+        # 这个是在原始图片H>W 的情况下做调整
+        # 1、上下调整同样的尺寸(w_e-h)/2
+        # 2、min(h1, h2)>(w_e-h)/2 就上下调整(w_e-h)/2
+        # 3、min(h1, h2)<(w_e-h)/2 短边到顶，长边延伸(w_e-h)/2+(h1-h2)
+        h1 = box[1]
+        h2 = H - box[3]
+        pad_h = int((w_e-h)/2)  # 这里需要整型
+        if min(h1, h2) > pad_h:
+            box[1] = max(box[1] - pad_h, 0)
+            box[3] = min(box[3] + pad_h, H)
+        else:
+            if h1 < h2:
+                pad_down = 2 * pad_h - h1
+                box[1] = 0
+                box[3] = box[3] + pad_down
+            else:
+                pad_up = 2 * pad_h - h2
+                box[1] = box[1] - pad_up
+                box[3] = H
+
+    return box
+
+
+def square_crop(img, box, path1, index, save_img=False):
+    '''
+    1:1的方式裁剪
+    input
+    img: 原始图片->np
+    box：expand之后的预测框坐标->[int,int,...] xyxy格式
+    path：裁剪图片存储的路径
+    index：图片中第几个人
+    save：是否保存图片
+    return
+    result['imgb64'] = imgb64  # base64类型的数据
+    result['box'] = box  # 调整后的框
+    result['id'] = index # 第几个人
+    '''
+    box1 = copy.deepcopy(box)  # 你传入的时候这个框变量就改变了
+    result = {'size': '1040*1040'}
+    H, W, _ = img.shape
+    box1 = box_to_square(box1, H, W)
+    crop_img = crop_resize_imgs(path1, img, box1, index, size=(1024, 1024), save_img=save_img)
+    imgb64 = str(base64.b64encode(np.ascontiguousarray(crop_img)), 'utf-8')
+    result['imgb64'] = imgb64
+    result['box'] = box1
+    result['id'] = index
+    return result
+
+
 
 
 def infer(source, save_path, labeled_path, save_img=True):
@@ -268,34 +403,33 @@ def infer(source, save_path, labeled_path, save_img=True):
                     # print(cls)
                     if cls == 0.0:  # 如果是person类，那么就裁剪图像
                         # TODO 这里做一个判断就是非常小的人就不用裁剪
-                        # w = abs(int(xyxy[3]) - int(xyxy[1]))
-                        # h = abs(int(xyxy[2]) - int(xyxy[0]))
                         _, _, w, h = get_xywh(xyxy)  # 裁剪框的宽高
                         if w < 100 or h < 100:
                             continue
-                        # TODO 1、这里裁剪的图片还需要做一个统一的格式(完成，需要改进)
+
                         H, W, _ = im0.shape
-                        # 先框做处理在裁剪
-                        box = box_process(H, W, xyxy, alpha=configs['alpha'])  # 处理之后的裁剪框
+                        # 统一处理成int类型， 并且扩大box
+                        box, w, h = box_same_process(H, W, xyxy, alpha=1.1)
 
-                        # 画图展示
-
+                        # 预测框-------------------------
                         # plot_one_box(xyxy, im0, color=[0, 0, 0], label='predict', line_thickness=3)
-                        # # TODO 临时的到时候需要删掉
-                        # if (w * 825) / 440 < h:
-                        #     box_expan, _, _ = box_expand(H, W, xyxy, alpha=configs['alpha'])
-                        #     plot_one_box(box_expan, im0, color=[0, 225, 0], label='box_expand', line_thickness=3)
-                        # plot_one_box(box, im0, color=[225, 0, 0], label='process', line_thickness=3)
+                        # # 扩大框
+                        # plot_one_box(box, im0, color=[0, 225, 0], label='box_expand', line_thickness=3)
+                        # -------------------------------
+                        # 两个分支
+                        # 1、处理1:1的框, im0原始图片，xyxy：tensor类型的坐标-》转换成int类型
+                        res1 = square_crop(im0, box, save_path, index, save_img=save_img)
+                        print(res1['box'])
+                        result['1040_1040'] = res1
+
+                        # # 结果框-------------------------
+                        # plot_one_box(res1['box'], im0, color=[0, 225, 225], label='result1', line_thickness=3)
+                        # -------------------------------
+                        # 2、处理440 * 852
+                        res2 = right_crop(im0, box, save_path, index, save_img=save_img)
+                        # plot_one_box(res2['box'], im0, color=[225, 225, 0], label='result2', line_thickness=3)
                         # cv2.imwrite(save_path.split('.')[-2] + '_' + 'plot.jpg', im0)
-                        # 裁剪
-                        crop_img = crop_resize_imgs(save_path, im0, box, index, save_img)
-
-                        # TODO 2、设计一个返回的json类型（完成）
-                        imgb64 = str(base64.b64encode(np.ascontiguousarray(crop_img)), 'utf-8')
-                        result['imgb64'] = imgb64
-                        result['box'] = [int(xyxy[0]), int(xyxy[1]), int(xyxy[2]), int(xyxy[3])]
-                        result['id'] = index
-
+                        result['440_852'] = res2
                         index += 1
                         results.append(result)
                     else:
