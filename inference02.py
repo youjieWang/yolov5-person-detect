@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
-# @Time    : 2021/9/28 17:03
+# @Time    : 2023/8/5 17:03
 # @Author  : yj.wang
 # @File    : inference02.py
 # -*- coding: UTF-8 -*-
@@ -34,7 +34,9 @@ configs = {
     'classes': None,
     'agnostic_nms': False,
     'exist_ok': False,
-    'alpha': 1.1  # 预测框扩大的比例
+    'alpha': 1.1,  # 预测框扩大的比例
+    'size1': (1040, 1040),
+    'szie2': (440, 852)
 }
 
 
@@ -127,7 +129,7 @@ def box_same_process(H, W, xyxy, alpha=1.1):
     # 太小了就扩大一点点比例
     if int((w * 852) / 440) < h:
         alpha = 1.05
-    box, w, h = box_expand_2(H, W, box, alpha=alpha) # 返回的元素都是int类型
+    box, w, h = box_expand_2(H, W, box, alpha=alpha)  # 返回的元素都是int类型
 
     return box, w, h,
 
@@ -147,8 +149,8 @@ def box_expand(H, W, box, alpha=1.1):
     box[2] = int(min(box[2], W))
     box[3] = int(min(box[3], H))
 
-
     return box, int(w1), int(h1)
+
 
 def box_expand_2(H, W, box, alpha=1.1):
     # 四边都扩大同样的大小的像素，扩大的像素按照宽的比例
@@ -156,7 +158,6 @@ def box_expand_2(H, W, box, alpha=1.1):
     w1 = xywh[2] * alpha
     h1 = xywh[3] + (w1 - xywh[2])
     box = get_xyxy([xywh[0], xywh[1], w1, h1])
-    # TODO 这边expand有点问题需要处理
     # 有可能expand或者没有expand的时候就已经有下面的边界到图像的下边界
     box[0] = int(max(box[0], 0))
     box[1] = int(max(box[1], 0))
@@ -165,14 +166,15 @@ def box_expand_2(H, W, box, alpha=1.1):
 
     return box, int(w1), int(h1)
 
+
 def box_process(H, W, box, alpha=1.1):
     '''
     H:原始图片的高
     W：原始图片的宽
     box:[x,y,x,y]->int
     '''
-    print('---\nbox expand---------')
-    print(box)
+    # print('---\nbox expand---------')
+    # print(box)
     pad = 0
     w = box[2] - box[0]
     # h = box[3] - box[1]
@@ -191,7 +193,7 @@ def box_process(H, W, box, alpha=1.1):
             box[1] = box[1] - res
         else:
             # 否则需要上下pad
-            print(int((res - box[1]) / 2))
+            # print(int((res - box[1]) / 2))
             pad = 0 if int((res - box[1]) / 2) < 60 else int((res - box[1]) / 2)
             box[1] = 0
     # if crop:
@@ -217,10 +219,12 @@ def crop_resize_imgs(path1, img, box, index, size=(440, 852), save_img=False, pa
     labeled_path: only for test
     '''
 
-    # img1 = img[int(box[1]): int(box[3]), int(box[0]): int(box[2]), :]
     img1 = img[box[1]: box[3], box[0]: box[2], :]
     if pad:
-        img1 = cv2.copyMakeBorder(img1, pad, pad, 0, 0, cv2.BORDER_REPLICATE)
+        # 纯色填充
+        img1 = cv2.copyMakeBorder(img1, pad, pad, 0, 0, cv2.BORDER_CONSTANT, value=(225, 225, 225))
+        # 就近填充
+        # img1 = cv2.copyMakeBorder(img1, pad, pad, 0, 0, cv2.BORDER_REPLICATE)
     img1 = cv2.resize(img1, size)
 
     if save_img:
@@ -229,7 +233,7 @@ def crop_resize_imgs(path1, img, box, index, size=(440, 852), save_img=False, pa
     return img1
 
 
-def right_crop(img, box, path1, index, save_img=False):
+def right_crop(img, box, path1, index, size=(440, 852), save_img=False):
     '''
     裁剪成440*852
     input
@@ -237,7 +241,8 @@ def right_crop(img, box, path1, index, save_img=False):
     box：expand之后的预测框坐标->[int,int,...] xyxy格式
     path：裁剪图片存储的路径
     index：图片中第几个人
-    save：是否保存图片
+    size：默认设置为440*852
+    save_img：是否保存图片，默认魏False
     return
     result['imgb64'] = imgb64  # base64类型的数据
     result['box'] = box  # 调整后的框
@@ -245,10 +250,10 @@ def right_crop(img, box, path1, index, save_img=False):
     '''
     result = {'size': '440*852'}
     H, W, _ = img.shape
-    # # 先框做处理在裁剪
+    # 先框做处理在裁剪
     box, pad = box_process(H, W, box, alpha=configs['alpha'])  # 处理之后的裁剪框
     # 裁剪
-    crop_img = crop_resize_imgs(path1, img, box, index, size=(440, 852), save_img=save_img, pad=pad)
+    crop_img = crop_resize_imgs(path1, img, box, index, size=size, save_img=save_img, pad=pad)
     # # TODO 2、设计一个返回的json类型（完成）
     imgb64 = str(base64.b64encode(np.ascontiguousarray(crop_img)), 'utf-8')
     result['imgb64'] = imgb64
@@ -278,14 +283,13 @@ def box_to_square(box, H, W):
         # box[1] = max(box[1] - 20, 0) # 这边在之前已经处理了，所以就不用添加像素了
         box[3] = box[1] + (box[2] - box[0])
     else:
-        # TODO
         # 这个是在原始图片H>W 的情况下做调整
         # 1、上下调整同样的尺寸(w_e-h)/2
         # 2、min(h1, h2)>(w_e-h)/2 就上下调整(w_e-h)/2
         # 3、min(h1, h2)<(w_e-h)/2 短边到顶，长边延伸(w_e-h)/2+(h1-h2)
         h1 = box[1]
         h2 = H - box[3]
-        pad_h = int((w_e-h)/2)  # 这里需要整型
+        pad_h = int((w_e - h) / 2)  # 这里需要整型
         if min(h1, h2) > pad_h:
             box[1] = max(box[1] - pad_h, 0)
             box[3] = min(box[3] + pad_h, H)
@@ -302,7 +306,7 @@ def box_to_square(box, H, W):
     return box
 
 
-def square_crop(img, box, path1, index, save_img=False):
+def square_crop(img, box, path1, index, size=(1024, 1024), save_img=False):
     '''
     1:1的方式裁剪
     input
@@ -310,7 +314,8 @@ def square_crop(img, box, path1, index, save_img=False):
     box：expand之后的预测框坐标->[int,int,...] xyxy格式
     path：裁剪图片存储的路径
     index：图片中第几个人
-    save：是否保存图片
+    size：默认设置为1040*1040
+    save_img：是否保存图片，默认魏False
     return
     result['imgb64'] = imgb64  # base64类型的数据
     result['box'] = box  # 调整后的框
@@ -320,7 +325,7 @@ def square_crop(img, box, path1, index, save_img=False):
     result = {'size': '1040*1040'}
     H, W, _ = img.shape
     box1 = box_to_square(box1, H, W)
-    crop_img = crop_resize_imgs(path1, img, box1, index, size=(1024, 1024), save_img=save_img)
+    crop_img = crop_resize_imgs(path1, img, box1, index, size=size, save_img=save_img)
     imgb64 = str(base64.b64encode(np.ascontiguousarray(crop_img)), 'utf-8')
     result['imgb64'] = imgb64
     result['box'] = box1
@@ -328,19 +333,20 @@ def square_crop(img, box, path1, index, save_img=False):
     return result
 
 
-
-
-def infer(source, save_path, labeled_path, save_img=True):
+def infer(source, save_path=None, save_img=False):
     '''
     source: 原始数据的目录
+    save_path:默认值为空，表示不存储
+    save_img:默认值为False
     return :# 首先是多人，每个人返回的是什么操作
             # results = []
             # results.append(result{'imgb64': '裁剪之后imgb64的图像', 'xyxy': '坐标', id: '表示这张图像中第几个人'})
     '''
     results = []
     result = {}
-    save_dir = Path(increment_path(Path(save_path) / configs['name'], exist_ok=configs['exist_ok']))  # increment run
-    save_dir.mkdir(parents=True, exist_ok=True)  # make dir
+    if save_img:
+        save_dir = Path(increment_path(Path(save_path) / configs['name'], exist_ok=configs['exist_ok']))  # increment run
+        save_dir.mkdir(parents=True, exist_ok=True)  # make dir
     # Initialize
     set_logging()
     device = select_device(configs['device'])
@@ -382,13 +388,11 @@ def infer(source, save_path, labeled_path, save_img=True):
         for det in pred:  # detections per image
             p, s, im0, frame = path, path.split('\\')[-1], im0s, getattr(dataset, 'frame', 0)
             p = Path(p)  # to Path
-            save_path = str(save_dir / p.name)  # img.jpg
-            # txt_path = str(save_dir / 'labels' / p.stem) + ('' if dataset.mode == 'image' else f'_{frame}')  # img.txt
+            if save_img:
+                save_path = str(save_dir / p.name)  # img.jpg
             s += ': %gx%g ' % img.shape[2:]  # print string
-            # gn = torch.tensor(im0.shape)[[1, 0, 1, 0]]  # normalization gain whwh
             # print(save_path)  # data\crop_imgs\exp\bus.jpg
             # print(type(save_path))
-            # print(txt_path)
             # TODO 判断是否检测到图片
             if len(det):
                 # Rescale boxes from img_size to im0 size
@@ -397,36 +401,31 @@ def infer(source, save_path, labeled_path, save_img=True):
                 # print(det)  # [x1, y1, x2, y2, conf, cls]
                 index = 0
                 for *xyxy, conf, cls in reversed(det):
-                    # print(type(xyxy))
-                    # print(xyxy)
-                    # print(conf)
-                    # print(cls)
                     if cls == 0.0:  # 如果是person类，那么就裁剪图像
-                        # TODO 这里做一个判断就是非常小的人就不用裁剪
+                        # 这里做一个判断就是非常小的人就不用裁剪
                         _, _, w, h = get_xywh(xyxy)  # 裁剪框的宽高
                         if w < 100 or h < 100:
                             continue
-
                         H, W, _ = im0.shape
                         # 统一处理成int类型， 并且扩大box
                         box, w, h = box_same_process(H, W, xyxy, alpha=1.1)
 
-                        # 预测框-------------------------
+                        # 画预测框-------------------------
                         # plot_one_box(xyxy, im0, color=[0, 0, 0], label='predict', line_thickness=3)
-                        # # 扩大框
+                        # 画扩大框
                         # plot_one_box(box, im0, color=[0, 225, 0], label='box_expand', line_thickness=3)
                         # -------------------------------
                         # 两个分支
                         # 1、处理1:1的框, im0原始图片，xyxy：tensor类型的坐标-》转换成int类型
-                        res1 = square_crop(im0, box, save_path, index, save_img=save_img)
+                        res1 = square_crop(im0, box, save_path, index, size=configs['size1'], save_img=save_img)
                         print(res1['box'])
                         result['1040_1040'] = res1
 
-                        # # 结果框-------------------------
+                        # # 画结果框-------------------------
                         # plot_one_box(res1['box'], im0, color=[0, 225, 225], label='result1', line_thickness=3)
                         # -------------------------------
                         # 2、处理440 * 852
-                        res2 = right_crop(im0, box, save_path, index, save_img=save_img)
+                        res2 = right_crop(im0, box, save_path, index, size=configs['size2'], save_img=save_img)
                         # plot_one_box(res2['box'], im0, color=[225, 225, 0], label='result2', line_thickness=3)
                         # cv2.imwrite(save_path.split('.')[-2] + '_' + 'plot.jpg', im0)
                         result['440_852'] = res2
@@ -445,13 +444,8 @@ def infer(source, save_path, labeled_path, save_img=True):
 
 if __name__ == '__main__':
     path = './data/test_data/'  # 路径
-    # labeled_path = './data/labeled'  # 存储预标签的图片
     crop_store_path = './data/crop_imgs'  # 裁剪的图片
     save_cropped = True
-
-    # 如果文件不存在的话就创建
-    # if not os.path.exists(labeled_path):
-    #     os.mkdir(labeled_path)
 
     # 这里单张图片和多张图片都可以处理
     t = time.time()
