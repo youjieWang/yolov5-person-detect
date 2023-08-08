@@ -14,30 +14,31 @@ import numpy as np
 import time
 from pathlib import Path
 import copy
+import yaml
 
 import torch
 from utils.general import increment_path, set_logging, check_img_size, non_max_suppression, scale_coords, xyxy2xywh
 from utils.datasets import LoadImages
 from utils.torch_utils import select_device, time_synchronized
 from models.experimental import attempt_load
-
+from utils.datasets import letterbox
 from utils.plots import plot_one_box
 
-configs = {
-    'name': 'exp',
-    'device': 'cpu',
-    'weights': r'./weights/yolov5s.pt',
-    'imgsz': 640,
-    'augment': False,  # 是否增强推理
-    'conf_thres': 0.25,
-    'iou_thres': 0.45,
-    'classes': None,
-    'agnostic_nms': False,
-    'exist_ok': False,
-    'alpha': 1.1,  # 预测框扩大的比例
-    'size1': (1040, 1040),
-    'szie2': (440, 852)
-}
+# configs = {
+#     'name': 'exp',
+#     'device': 'cpu',
+#     'weights': r'./weights/yolov5s.pt',
+#     'imgsz': 640,
+#     'augment': False,  # 是否增强推理
+#     'conf_thres': 0.25,
+#     'iou_thres': 0.45,
+#     'classes': None,
+#     'agnostic_nms': False,
+#     'exist_ok': False,
+#     'alpha': 1.1,  # 预测框扩大的比例
+#     'size1': (1040, 1040),
+#     'size2': (440, 852)
+# }
 
 
 # 单张图片的多个boxes进行处理
@@ -248,7 +249,7 @@ def right_crop(img, box, path1, index, size=(440, 852), save_img=False):
     result['box'] = box  # 调整后的框
     result['id'] = index # 第几个人
     '''
-    result = {'size': '440*852'}
+    result = {'size': configs['size2']}
     H, W, _ = img.shape
     # 先框做处理在裁剪
     box, pad = box_process(H, W, box, alpha=configs['alpha'])  # 处理之后的裁剪框
@@ -322,7 +323,7 @@ def square_crop(img, box, path1, index, size=(1024, 1024), save_img=False):
     result['id'] = index # 第几个人
     '''
     box1 = copy.deepcopy(box)  # 你传入的时候这个框变量就改变了
-    result = {'size': '1040*1040'}
+    result = {'size': configs['size1']}
     H, W, _ = img.shape
     box1 = box_to_square(box1, H, W)
     crop_img = crop_resize_imgs(path1, img, box1, index, size=size, save_img=save_img)
@@ -342,6 +343,8 @@ def infer(source, save_path=None, save_img=False):
             # results = []
             # results.append(result{'imgb64': '裁剪之后imgb64的图像', 'xyxy': '坐标', id: '表示这张图像中第几个人'})
     '''
+    # TODO 2、函数拆解成检测函数和裁剪函数
+
     results = []
     result = {}
     if save_img:
@@ -386,7 +389,7 @@ def infer(source, save_path=None, save_img=False):
 
         # Process detections
         for det in pred:  # detections per image
-            p, s, im0, frame = path, path.split('\\')[-1], im0s, getattr(dataset, 'frame', 0)
+            p, s, im0 = path, path.split('\\')[-1], im0s
             p = Path(p)  # to Path
             if save_img:
                 save_path = str(save_dir / p.name)  # img.jpg
@@ -410,25 +413,26 @@ def infer(source, save_path=None, save_img=False):
                         # 统一处理成int类型， 并且扩大box
                         box, w, h = box_same_process(H, W, xyxy, alpha=1.1)
 
-                        # 画预测框-------------------------
-                        # plot_one_box(xyxy, im0, color=[0, 0, 0], label='predict', line_thickness=3)
-                        # 画扩大框
-                        # plot_one_box(box, im0, color=[0, 225, 0], label='box_expand', line_thickness=3)
-                        # -------------------------------
+                        # TODO 这边可以
+
                         # 两个分支
                         # 1、处理1:1的框, im0原始图片，xyxy：tensor类型的坐标-》转换成int类型
                         res1 = square_crop(im0, box, save_path, index, size=configs['size1'], save_img=save_img)
                         print(res1['box'])
-                        result['1040_1040'] = res1
-
-                        # # 画结果框-------------------------
-                        # plot_one_box(res1['box'], im0, color=[0, 225, 225], label='result1', line_thickness=3)
-                        # -------------------------------
+                        result['square_crop'] = res1
                         # 2、处理440 * 852
                         res2 = right_crop(im0, box, save_path, index, size=configs['size2'], save_img=save_img)
+                        result['right_crop'] = res2
+                        # # 画预测框-------------------------
+                        # plot_one_box(xyxy, im0, color=[0, 0, 0], label='predict', line_thickness=3)
+                        # # 画扩大框
+                        # plot_one_box(box, im0, color=[0, 225, 0], label='box_expand', line_thickness=3)
+                        # # # 画结果框-------------------------
+                        # plot_one_box(res1['box'], im0, color=[0, 225, 225], label='result1', line_thickness=3)
+                        # # -------------------------------
                         # plot_one_box(res2['box'], im0, color=[225, 225, 0], label='result2', line_thickness=3)
                         # cv2.imwrite(save_path.split('.')[-2] + '_' + 'plot.jpg', im0)
-                        result['440_852'] = res2
+
                         index += 1
                         results.append(result)
                     else:
@@ -442,12 +446,141 @@ def infer(source, save_path=None, save_img=False):
     return results
 
 
-if __name__ == '__main__':
-    path = './data/test_data/'  # 路径
-    crop_store_path = './data/crop_imgs'  # 裁剪的图片
-    save_cropped = True
+def detect(source):
+    # Initialize
+    set_logging()
+    device = select_device(configs['device'])
+    half = device.type != 'cpu'  # half precision only supported on CUDA
 
-    # 这里单张图片和多张图片都可以处理
+    # Load model
+    model = attempt_load(configs['weights'], map_location=device)  # load FP32 model
+    stride = int(model.stride.max())  # model stride
+    imgsz = check_img_size(configs['imgsz'], s=stride)  # check img_siz e
+    if half:
+        model.half()  # to FP16
+
+    # ---------load img and preprocess-------------
+    img0 = cv2.imread(source)
+
+    # Padded resize
+    img = letterbox(img0, imgsz, stride=stride)[0]
+
+    # Convert
+    img = img[:, :, ::-1].transpose(2, 0, 1)  # BGR to RGB, to 3x416x416
+    img = np.ascontiguousarray(img)
+    # Run inference
+    if device.type != 'cpu':  # 如果设备是GPU的运行
+        model(torch.zeros(1, 3, imgsz, imgsz).to(device).type_as(next(model.parameters())))  # run once
+
+    # img, img0是需要的
+    img = torch.from_numpy(img).to(device)
+    img = img.half() if half else img.float()  # uint8 to fp16/32
+    img /= 255.0  # 0 - 255 to 0.0 - 1.0
+    if img.ndimension() == 3:
+        img = img.unsqueeze(0)
+
+    # Inference
+    t1 = time_synchronized()
+    pred = model(img, augment=configs['augment'])[0]
+
+    # Apply NMS
+    pred = non_max_suppression(pred, configs['conf_thres'], configs['iou_thres'], classes=configs['classes'],
+                               agnostic=configs['agnostic_nms'])
+    t2 = time_synchronized()
+    print(f'model inference + NMS Done. ({t2 - t1:.3f}s)')
+    return pred, img, img0
+
+
+def infer2(source, save_path=None, save_img=False):
+    '''
+    source: 原始数据的目录
+    save_path:默认值为空，表示不存储
+    save_img:默认值为False
+    return :# 首先是多人，每个人返回的是什么操作
+            # results = []
+            # results.append(result{'imgb64': '裁剪之后imgb64的图像', 'xyxy': '坐标', id: '表示这张图像中第几个人'})
+    '''
+    # 函数拆解成检测函数和裁剪函数
+    results = []
+    result = {}
+    if save_img:
+        save_dir = Path(
+            increment_path(Path(save_path) / configs['name'], exist_ok=configs['exist_ok']))  # increment run
+        save_dir.mkdir(parents=True, exist_ok=True)  # make dir
+    t0 = time.time()
+    # 针对单张图片的检测
+    pred, img, img0 = detect(source)
+
+    # Process detections
+    for det in pred:  # detections per image
+        s, im0 = source.split('/')[-1], img0
+        if save_img:
+            print(s)
+            save_path = str(save_dir / s)  # img.jpg
+            print(save_path)
+        s += ': %gx%g ' % img.shape[2:]  # print string
+        # print(save_path)  # data\crop_imgs\exp\bus.jpg
+        # print(type(save_path))
+        # TODO 判断是否检测到图片
+        if len(det):
+            # Rescale boxes from img_size to im0 size
+            det[:, :4] = scale_coords(img.shape[2:], det[:, :4], im0.shape).round()
+            # print('-----dect---------')
+            # print(det)  # [x1, y1, x2, y2, conf, cls]
+            index = 0
+            for *xyxy, conf, cls in reversed(det):
+                if cls == 0.0:  # 如果是person类，那么就裁剪图像
+                    # 这里做一个判断就是非常小的人就不用裁剪
+                    _, _, w, h = get_xywh(xyxy)  # 裁剪框的宽高
+                    if w < 100 or h < 100:
+                        continue
+                    H, W, _ = im0.shape
+                    # 统一处理成int类型， 并且扩大box
+                    box, w, h = box_same_process(H, W, xyxy, alpha=configs['alpha'])
+
+                    # 两个分支
+                    # 1、处理1:1的框, im0原始图片，xyxy：tensor类型的坐标-》转换成int类型
+                    res1 = square_crop(im0, box, save_path, index, size=configs['size1'], save_img=save_img)
+                    print(res1['box'])
+                    result['square_crop'] = res1
+                    # 2、处理440 * 852
+                    res2 = right_crop(im0, box, save_path, index, size=configs['size2'], save_img=save_img)
+                    result['right_crop'] = res2
+                    # # 画预测框-------------------------
+                    # plot_one_box(xyxy, im0, color=[0, 0, 0], label='predict', line_thickness=3)
+                    # # 画扩大框
+                    # plot_one_box(box, im0, color=[0, 225, 0], label='box_expand', line_thickness=3)
+                    # # # 画结果框-------------------------
+                    # plot_one_box(res1['box'], im0, color=[0, 225, 225], label='result1', line_thickness=3)
+                    # # -------------------------------
+                    # plot_one_box(res2['box'], im0, color=[225, 225, 0], label='result2', line_thickness=3)
+                    # cv2.imwrite(save_path.split('.')[-2] + '_' + 'plot.jpg', im0)
+
+                    index += 1
+                    results.append(result)
+                else:
+                    print('输入的图片中找不到人')
+
+        # Print time (inference + NMS)
+        print('number of person: ', len(results))
+        print(f'Done. ({time.time() - t0:.3f}s)')
+
+    return results
+
+if __name__ == '__main__':
+    # 使用外部的配置文件，导入参数、
+    with open('inference.yaml',encoding='utf-8') as f:
+        configs = yaml.load(f, Loader=yaml.FullLoader)  # 读取yaml文件
+
+    # 这里单张图片和多张图片都可以处理（推荐使用该方法）
+    # 这个方法对于多张图片检测会很快，不用每一次都去重新加载模型
+    # res = infer(configs['path'], configs['crop_store_path'], configs['save_cropped'])
     t = time.time()
-    res = infer(path, crop_store_path, save_cropped)
+
+    # 仅仅适用于单张图片
+    # for p in os.listdir('./data/test_data/'):
+    #     res = infer2('./data/test_data/'+p, configs['crop_store_path'], configs['save_cropped'])
+    res = infer2(configs['path'], configs['crop_store_path'], configs['save_cropped'])
     print(f'infer. ({time.time() - t:.3f}s)')
+
+

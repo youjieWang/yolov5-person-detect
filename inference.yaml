@@ -1,0 +1,22 @@
+
+name: 'exp'
+device: 'cpu'
+weights: './weights/yolov5s.pt'
+imgsz: 640
+augment: False  # 是否增强推理
+conf_thres: 0.25
+iou_thres: 0.45
+classes: null
+agnostic_nms: False
+exist_ok: False
+
+path: './data/test_data/test12.jpg'  # 路径
+crop_store_path: './data/crop_imgs'  # 裁剪的图片
+save_cropped: True
+alpha: 1.1  # 预测框扩大的比例
+size1:
+  - 1040
+  - 1040
+size2:
+  - 440
+  - 852
