@@ -109,7 +109,7 @@ def square_box(box, H, W):
     w1 = box[0]
     w2 = W - box[2]
     pad_w = w1 if w2 > w1 else w2
-    box[0] = box[0] - pad_w  # TODO 这个会不会超出边界，要不要+1
+    box[0] = box[0] - pad_w
     box[2] = box[2] + pad_w
     w_e = box[2] - box[0]
     h = box[3] - box[1]
