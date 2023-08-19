@@ -1,30 +1,11 @@
 # import logging
 import torch
 import torch.nn as nn
-from yolo_utils import check_img_size, non_max_suppression, scale_coords, letterbox
+from utils.general import check_img_size, non_max_suppression, scale_coords
+from utils.datasets import letterbox
 import numpy as np
 import cv2
-
-def autopad(k, p=None):  # kernel, padding
-    # Pad to 'same'
-    if p is None:
-        p = k // 2 if isinstance(k, int) else [x // 2 for x in k]  # auto-pad
-    return p
-
-class Conv(nn.Module):
-    # Standard convolution
-    def __init__(self, c1, c2, k=1, s=1, p=None, g=1, act=True):  # ch_in, ch_out, kernel, stride, padding, groups
-        super(Conv, self).__init__()
-        self.conv = nn.Conv2d(c1, c2, k, s, autopad(k, p), groups=g, bias=False)
-        self.bn = nn.BatchNorm2d(c2)
-        self.act = nn.SiLU() if act is True else (act if isinstance(act, nn.Module) else nn.Identity())
-
-    def forward(self, x):
-        return self.act(self.bn(self.conv(x)))
-
-    def fuseforward(self, x):
-        return self.act(self.conv(x))
-
+from models.common import Conv
 
 class Ensemble(nn.ModuleList):
     # Ensemble of models
@@ -85,6 +66,7 @@ class YoloModel():
             if len(det):
                 det[:, :4] = scale_coords(img.shape[2:], det[:, :4], image.shape).round()
                 for *xyxy, conf, cls in reversed(det):
+                    print(conf)
                     # 这里其实还要判断取最大值的那个
                     if cls == 0.0:  # 如果是person类，那么就裁剪图像
                         w = xyxy[2] - xyxy[0]
